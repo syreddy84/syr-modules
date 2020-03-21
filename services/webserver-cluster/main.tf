@@ -40,7 +40,7 @@ data "template_file" "user_data" {
 }
 
 resource "aws_launch_configuration" "example" {
-  image_id        = "ami-07ebfd5b3428b6f4d"
+  image_id        = var.ami
   instance_type   = var.instance_type
   key_name        = "syreddy84_1"
   security_groups = [aws_security_group.instance.id]
@@ -53,6 +53,10 @@ resource "aws_launch_configuration" "example" {
 }
 
 resource "aws_autoscaling_group" "example" {
+  # Explicitly depend on the launch configuration's name so each time it's
+  # replaced, this ASG is also replaced
+
+  name                 = "${var.cluster_name}-${aws_launch_configuration.example.name}"
   launch_configuration = aws_launch_configuration.example.name
   vpc_zone_identifier  = data.aws_subnet_ids.default.ids
 
@@ -66,6 +70,26 @@ resource "aws_autoscaling_group" "example" {
     key                 = "Name"
     value               = "${var.cluster_name}-terraform-asg-example"
     propagate_at_launch = true
+  }
+
+  dynamic "tag" {
+    for_each = var.custom_tags
+
+    content {
+      key                 = tag.key
+      value               = tag.value
+      propagate_at_launch = true
+    }
+  }
+
+  # Wait for at least this many instances to pass health checks before
+  # considering the ASG deployment complete
+  min_elb_capacity = var.min_size
+
+  # When replacing this ASG, create the replacement first, and only delete the
+  # original after
+  lifecycle {
+    create_before_destroy = true
   }
 }
 
@@ -112,25 +136,25 @@ resource "aws_lb_listener" "http" {
 
 resource "aws_security_group" "alb" {
   name = "${var.cluster_name}-terraform-example-alb"
-  
+
 }
 
-resource "aws_security_group_rule" "allow_http_inbound"{
-  type = "ingress"
+resource "aws_security_group_rule" "allow_http_inbound" {
+  type              = "ingress"
   security_group_id = aws_security_group.alb.id
-  from_port   = local.http_port
-  to_port     = local.http_port
-  protocol    = local.tcp_protocol
-  cidr_blocks = local.all_ips
+  from_port         = local.http_port
+  to_port           = local.http_port
+  protocol          = local.tcp_protocol
+  cidr_blocks       = local.all_ips
 }
 
-resource "aws_security_group_rule" "allow_http_outbound"{
-  type = "egress"
+resource "aws_security_group_rule" "allow_http_outbound" {
+  type              = "egress"
   security_group_id = aws_security_group.alb.id
-    from_port   = local.any_port
-    to_port     = local.any_port
-    protocol    = local.any_protocol
-    cidr_blocks = local.all_ips
+  from_port         = local.any_port
+  to_port           = local.any_port
+  protocol          = local.any_protocol
+  cidr_blocks       = local.all_ips
 }
 
 resource "aws_lb_target_group" "asg" {
@@ -167,10 +191,67 @@ resource "aws_lb_listener_rule" "asg" {
   }
 }
 
-locals{
-  http_port = 80
-  any_port = 0
+locals {
+  http_port    = 80
+  any_port     = 0
   any_protocol = -1
   tcp_protocol = "tcp"
-  all_ips = ["0.0.0.0/0"]
+  all_ips      = ["0.0.0.0/0"]
+}
+
+resource "aws_autoscaling_schedule" "scale_out_during_business_hours" {
+  count                  = var.enable_auto_scaling ? 1 : 0
+  scheduled_action_name  = "${var.cluster_name}-scale-out-during-business-hours"
+  min_size               = 1
+  max_size               = 3
+  desired_capacity       = 2
+  recurrence             = "0 9 * * *"
+  autoscaling_group_name = aws_autoscaling_group.example.name
+}
+
+resource "aws_autoscaling_schedule" "scale_in_at_night" {
+  #execute this only if auto scaling is enabled
+  count                  = var.enable_auto_scaling ? 1 : 0
+  scheduled_action_name  = "${var.cluster_name}-scale-in-at-night"
+  min_size               = 1
+  max_size               = 3
+  desired_capacity       = 1
+  recurrence             = "0 17 * * *"
+  autoscaling_group_name = aws_autoscaling_group.example.name
+}
+
+resource "aws_cloudwatch_metric_alarm" "high_cpu_utilization" {
+  alarm_name  = "${var.cluster_name}-high-cpu-utilization"
+  namespace   = "AWS/EC2"
+  metric_name = "CPUUtilization"
+
+  dimensions = {
+    AutoScalingGroupName = aws_autoscaling_group.example.name
+  }
+
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  period              = 300
+  statistic           = "Average"
+  threshold           = 90
+  unit                = "Percent"
+}
+
+resource "aws_cloudwatch_metric_alarm" "low_cpu_credit_balance" {
+  #only t* instances use cpu credits so check for the instance type
+  count       = format("%.1s", var.instance_type) == "t" ? 1 : 0
+  alarm_name  = "${var.cluster_name}-low-cpu-credit-balance"
+  namespace   = "AWS/EC2"
+  metric_name = "CPUCreditBalance"
+
+  dimensions = {
+    AutoScalingGroupName = aws_autoscaling_group.example.name
+  }
+
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = 1
+  period              = 300
+  statistic           = "Minimum"
+  threshold           = 10
+  unit                = "Count"
 }
