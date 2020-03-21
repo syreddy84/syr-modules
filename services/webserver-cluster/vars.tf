@@ -46,3 +46,9 @@ variable "ami" {
   default     = "ami-07ebfd5b3428b6f4d"
   type        = string
 }
+
+variable "server_text" {
+  description = "The text the web server should return"
+  default     = "Hello, World , its new version"
+  type        = string
+}

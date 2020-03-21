@@ -35,6 +35,7 @@ data "template_file" "user_data" {
     server_port = var.server_port
     db_address  = data.terraform_remote_state.db.outputs.address
     db_port     = data.terraform_remote_state.db.outputs.port
+    server_text = var.server_text
   }
 
 }
@@ -202,7 +203,7 @@ locals {
 resource "aws_autoscaling_schedule" "scale_out_during_business_hours" {
   count                  = var.enable_autoscaling ? 1 : 0
   scheduled_action_name  = "${var.cluster_name}-scale-out-during-business-hours"
-  min_size               = 1
+  min_size               = 2
   max_size               = 3
   desired_capacity       = 2
   recurrence             = "0 9 * * *"
@@ -213,9 +214,9 @@ resource "aws_autoscaling_schedule" "scale_in_at_night" {
   #execute this only if auto scaling is enabled
   count                  = var.enable_autoscaling ? 1 : 0
   scheduled_action_name  = "${var.cluster_name}-scale-in-at-night"
-  min_size               = 1
+  min_size               = 2
   max_size               = 3
-  desired_capacity       = 1
+  desired_capacity       = 2
   recurrence             = "0 17 * * *"
   autoscaling_group_name = aws_autoscaling_group.example.name
 }
